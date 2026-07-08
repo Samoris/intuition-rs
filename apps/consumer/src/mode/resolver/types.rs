@@ -23,7 +23,7 @@ use models::{
 };
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// This struct represents a message that is sent to the resolver
 /// consumer to be processed.
@@ -194,41 +194,14 @@ impl ResolverMessageType {
     ) -> Result<(), ConsumerError> {
         let address = Address::from_str(&account.id)?;
 
-        // Try TNS first (priority)
-        let resolved = match Tns::reverse_resolve(address, &resolver_consumer_context.tns_client)
-            .await
-        {
-            Ok(tns) if tns.name.is_some() => {
-                debug!("TNS resolved for account: {:?}", tns);
-                // Send avatar to IPFS upload consumer for image processing
-                if let Some(ref avatar_url) = tns.avatar {
-                    debug!("Sending TNS avatar to IPFS upload consumer: {}", avatar_url);
-                    if let Err(e) = resolver_consumer_context
-                        .client
-                        .send_message(
-                            serde_json::to_string(&IpfsUploadMessage {
-                                image: avatar_url.clone(),
-                            })?,
-                            None,
-                        )
-                        .await
-                    {
-                        warn!("Failed to send TNS avatar to IPFS upload consumer: {e}");
-                    }
-                }
-                Ens {
-                    name: tns.name,
-                    image: tns.avatar,
-                }
-            }
-            Ok(_) => {
-                debug!("No TNS name found, falling back to ENS");
-                Ens::get_ens(address, resolver_consumer_context).await?
-            }
-            Err(e) => {
-                debug!("TNS resolution failed: {e}, falling back to ENS");
-                Ens::get_ens(address, resolver_consumer_context).await?
-            }
+        // Try TNS first (priority), fall back to ENS if no name found
+        let tns = Tns::get_tns(address, resolver_consumer_context).await?;
+        let resolved = if tns.name.is_some() {
+            debug!("TNS resolved for account: {:?}", tns);
+            tns
+        } else {
+            debug!("No TNS name found, falling back to ENS");
+            Ens::get_ens(address, resolver_consumer_context).await?
         };
 
         if let Some(_name) = resolved.name.clone() {
